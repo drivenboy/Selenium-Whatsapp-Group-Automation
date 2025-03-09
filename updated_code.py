@@ -48,14 +48,15 @@ def write_json(timestamp, message_text):
 
 def get_today_messages(driver):
     try:
-        # Find the "TODAY"/"HEUTE" label container
+        # Find all "TODAY"/"HEUTE" label elements
         today_label_container = driver.find_element(By.XPATH, '//div[@class="_amk4 _amkb"]/span[contains(text(), "HEUTE") or contains(text(), "TODAY")]')
         
-        # Move to its parent and get all next sibling elements that contain messages
-        today_container = today_label_container.find_element(By.XPATH, "./../..")  # Move up to the main wrapper div
-        chat_containers = today_container.find_elements(By.XPATH, './following-sibling::div[@tabindex="-1"]')
+        # Move to its parent and get all *next* sibling elements that contain messages
+        today_container = today_label_container.find_element(By.XPATH, "./../..")
+        
+        # Find all messages appearing after the 'TODAY' label (Incoming & Outgoing)
+        chat_containers = today_container.find_elements(By.XPATH, './following-sibling::div[@role="row"]')
 
-        print(f"✅ Extracting {len(chat_containers)} messages from 'TODAY' section.")  # Debugging output
         return chat_containers  # Return only messages appearing after "TODAY"
 
     except Exception as e:
@@ -75,14 +76,15 @@ def get_visible_chat(driver):
     latest_message = None
     latest_timestamp = None
 
-    for chat in chat_containers:
+    for id,chat in enumerate(chat_containers):
+        print(f"✅ Extracting {id+1} of {len(chat_containers)} messages from 'TODAY' section.")  # Debugging output
         try:
             # Extract **all spans** inside the message container (Handles multi-line messages)
-            message_elements = chat.find_elements(By.XPATH, './/span[@dir="ltr"][@class="_ao3e selectable-text copyable-text"]/span')
+            message_elements = chat.find_elements(By.XPATH, './/div[@class="_akbu"]/span')
             message_text = "\n".join([span.text.strip() for span in message_elements if span.text.strip()])  # Join spans with newline
             print("Extracted Message:", message_text)  # Debugging output
 
-            # Move **1 level up** and find the **sibling timestamp container**
+            # Extract timestamps from sibling elements
             timestamp_elements = chat.find_elements(By.XPATH, './/span[@class="x1rg5ohu x16dsc37"]')
             timestamp_text = timestamp_elements[-1].text.strip() if timestamp_elements else None  # Pick the last timestamp
             print("Extracted Timestamp:", timestamp_text)  # Debugging output
@@ -93,10 +95,10 @@ def get_visible_chat(driver):
                 current_time = datetime.now()
                 time_diff = abs((current_time.hour * 60 + current_time.minute) - (message_time.hour * 60 + message_time.minute))
 
-                if time_diff < latest_time_diff:
-                    latest_time_diff = time_diff
-                    print(f"Latest Time Difference: {latest_time_diff}min")  # Debugging output
-                    print(f"Latest Message: {message_text}")  # Debugging output
+                # if time_diff < latest_time_diff:
+                #     latest_time_diff = time_diff
+                #     print(f"Latest Time Difference: {latest_time_diff} min")  # Debugging output
+                #     print(f"Latest Message: {message_text}")  # Debugging output
                 
                 # Check if this is the most recent message within 1 minute
                 if time_diff <= 1 and time_diff < latest_time_diff:
@@ -113,7 +115,7 @@ def get_visible_chat(driver):
 
 # Function to process message text (modify based on logic)
 def process_text(msg_text):
-    schichts = ('spätschicht', 'frühschicht')
+    schichts = ('spätschicht', 'frühschicht', 'nachtschicht')
     tage = ('jetzt', 'heute', 'morgen', 'samstag', 'sonntag', 'montag', 'dienstag', 'mittwoch', 'donnerstag', 'freitag')
     msg_text = msg_text.lower()
     ans = False
@@ -124,7 +126,8 @@ def process_text(msg_text):
     for schicht in schichts:
         if any((all(l in msg_text for l in ('mitarbeiter', 'benötigen', schicht)), 
                 all(s1 in msg_text for s1 in ('wer kann', schicht)), 
-                all(s2 in msg_text for s2 in ('kann', 'jemand', schicht)))):
+                all(s2 in msg_text for s2 in ('kann', 'jemand', schicht)),
+                all(s3 in msg_text for s3 in ('person', schicht)))):
 
             if not simple_mode:
                 for tag in tage:
@@ -145,39 +148,49 @@ audio_playing = False
 audio_lock = threading.Lock()
 
 def play_audio(audio_file):
-    """Continuously plays the alarm until 'q' is pressed."""
+    """Continuously plays the alarm every 15 seconds until 'q' is pressed."""
     global audio_playing
     pg.mixer.init()
     pg.mixer.music.load(audio_file)
-    
-    with audio_lock:
-        if audio_playing:
-            return  # Prevent multiple instances from playing
 
+    with audio_lock:
+        if audio_playing:  # Prevent multiple alarms from playing
+            return
         audio_playing = True
 
     try:
-        while audio_playing:
+        while audio_playing:  # Loop until 'q' is pressed
             pg.mixer.music.play()
-            sys.stdout.write("\r🔊 Alarm playing... Press 'q' to stop.")
-            time.sleep(15)  # Replay every 15 seconds
+            sys.stdout.write("\r🔊 Alarm playing... Press 'q' to stop.  ")
+            sys.stdout.flush()
+
+            # Instead of sleeping 15s, break into 1s chunks and check every second
+            for _ in range(15):  
+                if not audio_playing:  # If 'q' was pressed, stop immediately
+                    break
+                time.sleep(1)  # Sleep 1 second before checking again
+
+            # If 'q' was pressed, break the main loop immediately
+            if not audio_playing:
+                break
+
     finally:
-        stop_audio()
+        stop_audio()  # Ensure the audio stops when loop exits
 
 def stop_audio():
-    """Stops the alarm sound."""
+    """Stops the alarm sound immediately."""
     global audio_playing
     with audio_lock:
         audio_playing = False
-    pg.mixer.music.stop()
+    pg.mixer.music.stop()  # Force stop the alarm immediately
     print("\n🔕 Audio stopped.")
 
 def listen_for_stop():
     """Listens for the 'q' key to stop the audio."""
-    if audio_playing:
-        print("Press 'q' to stop the audio.")
-        kb.wait('q')
-        stop_audio()
+    print("Press 'q' to stop the audio.")
+    kb.wait('q')  # Waits for 'q' key press
+    stop_audio()  # Stop audio immediately
+
 
 
 # Continuously monitor for new messages
@@ -218,4 +231,4 @@ while True:
                 except:
                     pass
 
-    time.sleep(5)
+    time.sleep(2)
